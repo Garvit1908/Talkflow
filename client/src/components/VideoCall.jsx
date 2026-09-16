@@ -85,28 +85,13 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isVirtualFeed, setIsVirtualFeed] = useState(false);
-  const [callDuration, setCallDuration] = useState(0);
+  const [hasRemoteStream, setHasRemoteStream] = useState(false);
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const peerRef = useRef(null);
   const streamRef = useRef(null);
   const hasStartedRef = useRef(false);
-
-  // Timer for connected call duration
-  useEffect(() => {
-    if (callStatus !== "connected") return;
-    const interval = setInterval(() => {
-      setCallDuration((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [callStatus]);
-
-  const formatDuration = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-  };
 
   const cleanup = useCallback(() => {
     const activeStream = streamRef.current;
@@ -127,8 +112,7 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
     if (hasStartedRef.current) return;
     hasStartedRef.current = true;
 
-    let mediaStream = null;
-    let usingVirtual = false;
+    let mediaStream;
 
     // 1. Try real hardware camera + microphone
     try {
@@ -138,7 +122,6 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
       });
     } catch (fullErr) {
       console.warn("Hardware camera unavailable or in use by another tab. Using smart fallback:", fullErr.name);
-      usingVirtual = true;
       setIsVirtualFeed(true);
 
       // 2. Try microphone only with virtual animated canvas video
@@ -198,6 +181,7 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
           remoteVideoRef.current.srcObject = remoteStream;
           remoteVideoRef.current.play?.().catch((err) => console.warn("Remote playback error:", err));
         }
+        setHasRemoteStream(true);
         setCallStatus("connected");
       });
 
@@ -209,7 +193,6 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
       socket.on("call-accepted", (data) => {
         if (data?.signal && peer && !peer.destroyed) {
           peer.signal(data.signal);
-          setCallStatus("connected");
         }
       });
 
@@ -242,6 +225,7 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
           remoteVideoRef.current.srcObject = remoteStream;
           remoteVideoRef.current.play?.().catch((err) => console.warn("Remote playback error:", err));
         }
+        setHasRemoteStream(true);
         setCallStatus("connected");
       });
 
@@ -318,9 +302,21 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
           autoPlay
           playsInline
           className={`w-full h-full object-cover transition-opacity duration-700 ${
-            callStatus === "connected" ? "opacity-100" : "opacity-0"
+            hasRemoteStream ? "opacity-100" : "opacity-0"
           }`}
         />
+
+        {!hasRemoteStream && callStatus === "connected" && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-evergreen">
+            <div className="w-24 h-24 rounded-full bg-white/5 border border-lime/40 text-lime flex items-center justify-center font-display font-bold text-3xl shadow-[0_0_40px_rgba(217,250,87,0.12)]">
+              {(callData.callerName || callData.to?.name || "User").charAt(0).toUpperCase()}
+            </div>
+            <p className="mt-5 text-white font-display text-lg font-semibold">
+              {callData.callerName || callData.to?.name || "Other participant"}
+            </p>
+            <p className="mt-1 text-supporting text-sm">Camera is unavailable</p>
+          </div>
+        )}
 
         {/* Top Bar Status */}
         <div className="absolute top-4 left-4 right-4 flex items-center justify-between z-20 pointer-events-none">
@@ -334,7 +330,7 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
             ></span>
             <span className="text-xs font-semibold text-workspace font-display">
               {callStatus === "connected"
-                ? `Connected (${formatDuration(callDuration)})`
+                ? "Connected"
                 : callStatus === "ringing"
                 ? "Ringing..."
                 : "Connecting..."}
