@@ -92,7 +92,6 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isVirtualFeed, setIsVirtualFeed] = useState(false);
-  const [callDuration, setCallDuration] = useState(0);
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
@@ -100,40 +99,6 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
   const streamRef = useRef(null);
   const hasStartedRef = useRef(false);
 
-  // Call duration counter when actually connected
-  useEffect(() => {
-    if (callStatus !== "connected") return;
-    const interval = setInterval(() => {
-      setCallDuration((prev) => prev + 1);
-    }, 1000);
-    return () => clearInterval(interval);
-  }, [callStatus]);
-
-  const formatDuration = (seconds) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
-  };
-
-  // Safe playback of remote video when stream arrives
-  useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-      const playPromise = remoteVideoRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          console.warn("Autoplay was prevented by browser policy:", err);
-          // If browser blocks unmuted playback, mute and play to ensure video displays
-          if (remoteVideoRef.current) {
-            remoteVideoRef.current.muted = true;
-            remoteVideoRef.current.play().catch((e) => console.error("Remote video play failed:", e));
-          }
-        });
-      }
-    }
-  }, [remoteStream]);
-
-  // Clean up on component unmount
   const cleanup = useCallback(() => {
     const activeStream = streamRef.current;
     if (activeStream) {
@@ -357,12 +322,11 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
           }}
           autoPlay
           playsInline
-          className={`w-full h-full object-cover transition-opacity duration-500 ${
+          className={`w-full h-full object-cover transition-opacity duration-700 ${
             callStatus === "connected" && hasRemoteVideo ? "opacity-100" : "opacity-0"
           }`}
         />
 
-        {/* Remote Avatar Display when audio connected but video track is off/missing */}
         {callStatus === "connected" && !hasRemoteVideo && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-evergreen z-10">
             <div className="w-24 h-24 rounded-full bg-evergreen/85 text-lime border-2 border-lime/30 flex items-center justify-center font-bold text-3xl mb-4 shadow-xl">
@@ -390,7 +354,7 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
             ></span>
             <span className="text-xs font-semibold text-workspace font-display">
               {callStatus === "connected"
-                ? `Connected (${formatDuration(callDuration)})`
+                ? "Connected"
                 : callStatus === "ringing"
                 ? "Ringing..."
                 : "Connecting..."}
