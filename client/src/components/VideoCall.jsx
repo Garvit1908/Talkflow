@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import SimplePeer from "simple-peer";
 
-// TalkFlow Video Call Component - WebRTC Peer Connection with Smart Stream Fallback
+// STUN servers covering port 19302 and port 3478 for diverse ISP/cellular NAT traversal
+const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
+  { urls: "stun:stun3.l.google.com:19302" },
+  { urls: "stun:stun4.l.google.com:19302" },
+  { urls: "stun:stun.cloudflare.com:3478" },
+  { urls: "stun:global.stun.twilio.com:3478" },
+];
+
+// Creates an animated fallback stream if the hardware camera is locked by another window or unavailable
 function createFallbackStream(userName) {
   const canvas = document.createElement("canvas");
   canvas.width = 640;
@@ -10,11 +21,9 @@ function createFallbackStream(userName) {
   const initial = (userName || "U").charAt(0).toUpperCase();
 
   const draw = () => {
-    // Deep Evergreen surface
     ctx.fillStyle = "#182522";
     ctx.fillRect(0, 0, 640, 480);
 
-    // Subtle background grid
     ctx.strokeStyle = "rgba(217, 250, 87, 0.06)";
     ctx.lineWidth = 1;
     for (let x = 0; x < 640; x += 40) {
@@ -30,7 +39,6 @@ function createFallbackStream(userName) {
       ctx.stroke();
     }
 
-    // Glowing avatar circle
     const t = Date.now() / 900;
     const pulse = Math.sin(t) * 6;
     ctx.beginPath();
@@ -41,14 +49,12 @@ function createFallbackStream(userName) {
     ctx.strokeStyle = "#D9FA57";
     ctx.stroke();
 
-    // User initial
     ctx.fillStyle = "#D9FA57";
     ctx.font = "bold 56px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(initial, 320, 200);
 
-    // User name
     ctx.fillStyle = "#FBFCF8";
     ctx.font = "bold 20px sans-serif";
     ctx.fillText(userName || "User", 320, 305);
@@ -61,7 +67,6 @@ function createFallbackStream(userName) {
   const videoTrack = canvasStream.getVideoTracks()[0];
   videoTrack.addEventListener("ended", () => clearInterval(timer));
 
-  // Create synthetic silent audio track so WebRTC audio negotiation always passes
   let audioTrack = null;
   try {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -81,7 +86,9 @@ function createFallbackStream(userName) {
 
 export default function VideoCall({ socket, callData, currentUser, onEndCall }) {
   const [stream, setStream] = useState(null);
-  const [callStatus, setCallStatus] = useState("connecting");
+  const [remoteStream, setRemoteStream] = useState(null);
+  const [callStatus, setCallStatus] = useState("connecting"); // "connecting" | "ringing" | "connected" | "failed"
+  const [connectionMessage, setConnectionMessage] = useState("Initializing camera and media...");
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isVirtualFeed, setIsVirtualFeed] = useState(false);
@@ -93,7 +100,7 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
   const streamRef = useRef(null);
   const hasStartedRef = useRef(false);
 
-  // Timer for connected call duration
+  // Call duration counter when actually connected
   useEffect(() => {
     if (callStatus !== "connected") return;
     const interval = setInterval(() => {
@@ -108,6 +115,25 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
+  // Safe playback of remote video when stream arrives
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+      const playPromise = remoteVideoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn("Autoplay was prevented by browser policy:", err);
+          // If browser blocks unmuted playback, mute and play to ensure video displays
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.muted = true;
+            remoteVideoRef.current.play().catch((e) => console.error("Remote video play failed:", e));
+          }
+        });
+      }
+    }
+  }, [remoteStream]);
+
+  // Clean up on component unmount
   const cleanup = useCallback(() => {
     const activeStream = streamRef.current;
     if (activeStream) {
@@ -120,6 +146,8 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
     }
     if (socket) {
       socket.off("call-accepted");
+      socket.off("call-ended");
+      socket.off("call-rejected");
     }
   }, [socket]);
 
@@ -128,20 +156,19 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
     hasStartedRef.current = true;
 
     let mediaStream = null;
-    let usingVirtual = false;
 
     // 1. Try real hardware camera + microphone
     try {
+      setConnectionMessage("Accessing camera & microphone...");
       mediaStream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
       });
     } catch (fullErr) {
-      console.warn("Hardware camera unavailable or in use by another tab. Using smart fallback:", fullErr.name);
-      usingVirtual = true;
+      console.warn("Hardware camera unavailable, attempting smart fallback:", fullErr.name);
       setIsVirtualFeed(true);
 
-      // 2. Try microphone only with virtual animated canvas video
+      // 2. Try microphone only with virtual video track
       try {
         const audioStream = await navigator.mediaDevices.getUserMedia({
           video: false,
@@ -170,18 +197,15 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
       typeof callData.to === "object" ? callData.to._id : callData.to;
 
     if (callData.initiator) {
+      setCallStatus("ringing");
+      setConnectionMessage("Ringing recipient...");
+
       // Caller: create peer as initiator
       const peer = new SimplePeer({
         initiator: true,
         trickle: false,
         stream: mediaStream,
-        config: {
-          iceServers: [
-            { urls: "stun:stun.l.google.com:19302" },
-            { urls: "stun:stun1.l.google.com:19302" },
-            { urls: "stun:stun2.l.google.com:19302" },
-          ],
-        },
+        config: { iceServers: ICE_SERVERS },
       });
 
       peer.on("signal", (signal) => {
@@ -193,41 +217,44 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
         });
       });
 
-      peer.on("stream", (remoteStream) => {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStream;
-          remoteVideoRef.current.play?.().catch((err) => console.warn("Remote playback error:", err));
-        }
+      peer.on("stream", (rStream) => {
+        console.log("Caller received remote stream:", rStream);
+        setRemoteStream(rStream);
         setCallStatus("connected");
+      });
+
+      peer.on("connect", () => {
+        console.log("Caller peer connected!");
+        setConnectionMessage("Peer connected, receiving video...");
       });
 
       peer.on("error", (err) => {
         console.error("Caller peer error:", err);
       });
 
-      // Listen for callee acceptance signal
+      // Listen for callee's acceptance signal
       socket.on("call-accepted", (data) => {
+        setConnectionMessage("Call answered. Connecting secure video feed...");
         if (data?.signal && peer && !peer.destroyed) {
-          peer.signal(data.signal);
-          setCallStatus("connected");
+          try {
+            peer.signal(data.signal);
+          } catch (e) {
+            console.error("Error signalling caller peer:", e);
+          }
         }
       });
 
       peerRef.current = peer;
-      setCallStatus("ringing");
     } else {
+      setCallStatus("connecting");
+      setConnectionMessage("Accepting call and establishing connection...");
+
       // Callee: create peer and signal back
       const peer = new SimplePeer({
         initiator: false,
         trickle: false,
         stream: mediaStream,
-        config: {
-          iceServers: [
-            { urls: "stun:stun.l.google.com:19302" },
-            { urls: "stun:stun1.l.google.com:19302" },
-            { urls: "stun:stun2.l.google.com:19302" },
-          ],
-        },
+        config: { iceServers: ICE_SERVERS },
       });
 
       peer.on("signal", (signal) => {
@@ -237,12 +264,15 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
         });
       });
 
-      peer.on("stream", (remoteStream) => {
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = remoteStream;
-          remoteVideoRef.current.play?.().catch((err) => console.warn("Remote playback error:", err));
-        }
+      peer.on("stream", (rStream) => {
+        console.log("Callee received remote stream:", rStream);
+        setRemoteStream(rStream);
         setCallStatus("connected");
+      });
+
+      peer.on("connect", () => {
+        console.log("Callee peer connected!");
+        setConnectionMessage("Peer connected, receiving video...");
       });
 
       peer.on("error", (err) => {
@@ -251,10 +281,13 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
 
       // Signal with caller's incoming offer
       if (callData.incomingSignal) {
-        peer.signal(callData.incomingSignal);
+        try {
+          peer.signal(callData.incomingSignal);
+        } catch (e) {
+          console.error("Error signalling callee peer:", e);
+        }
       }
       peerRef.current = peer;
-      setCallStatus("connecting");
     }
   }, [callData, currentUser, socket]);
 
@@ -273,11 +306,6 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
     }
 
     return () => {
-      if (socket) {
-        socket.off("call-ended");
-        socket.off("call-rejected");
-        socket.off("call-accepted");
-      }
       cleanup();
     };
   }, [startMedia, cleanup, socket, onEndCall]);
@@ -308,19 +336,47 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
     }
   };
 
+  const hasRemoteVideo = Boolean(
+    remoteStream &&
+      remoteStream.getVideoTracks().length > 0 &&
+      remoteStream.getVideoTracks()[0].enabled
+  );
+
   return (
     <div className="fixed inset-0 bg-ink/85 z-50 flex items-center justify-center backdrop-blur-md animate-in fade-in duration-300 font-sans p-2 md:p-6">
       <div className="relative w-full h-full md:h-auto md:max-w-5xl md:aspect-video bg-evergreen md:rounded-3xl overflow-hidden shadow-2xl border border-white/10 flex flex-col">
         
         {/* Remote Video (Full Screen) */}
         <video
-          ref={remoteVideoRef}
+          ref={(el) => {
+            remoteVideoRef.current = el;
+            if (el && remoteStream && el.srcObject !== remoteStream) {
+              el.srcObject = remoteStream;
+              el.play().catch(() => {});
+            }
+          }}
           autoPlay
           playsInline
-          className={`w-full h-full object-cover transition-opacity duration-700 ${
-            callStatus === "connected" ? "opacity-100" : "opacity-0"
+          className={`w-full h-full object-cover transition-opacity duration-500 ${
+            callStatus === "connected" && hasRemoteVideo ? "opacity-100" : "opacity-0"
           }`}
         />
+
+        {/* Remote Avatar Display when audio connected but video track is off/missing */}
+        {callStatus === "connected" && !hasRemoteVideo && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-evergreen z-10">
+            <div className="w-24 h-24 rounded-full bg-evergreen/85 text-lime border-2 border-lime/30 flex items-center justify-center font-bold text-3xl mb-4 shadow-xl">
+              {callData.callerName?.charAt(0) || callData.to?.name?.charAt(0) || "U"}
+            </div>
+            <h3 className="text-white font-display text-xl font-bold tracking-tight mb-1">
+              {callData.callerName || callData.to?.name || "Connected"}
+            </h3>
+            <p className="text-supporting text-sm flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-lime animate-pulse"></span>
+              Audio Connected (Camera Off)
+            </p>
+          </div>
+        )}
 
         {/* Top Bar Status */}
         <div className="absolute top-4 left-4 right-4 flex items-center justify-between z-20 pointer-events-none">
@@ -363,7 +419,7 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
               {callData.callerName || callData.to?.name || "Video Call"}
             </h3>
             <p className="text-supporting font-medium text-sm">
-              {callStatus === "ringing" ? "Waiting for recipient to answer..." : "Setting up secure connection..."}
+              {connectionMessage}
             </p>
           </div>
         )}
@@ -371,7 +427,13 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
         {/* Local Video (PiP) */}
         <div className="absolute bottom-24 right-4 md:bottom-8 md:right-8 w-32 md:w-56 aspect-video bg-evergreen rounded-xl md:rounded-2xl overflow-hidden shadow-2xl border-2 border-white/20 hover:scale-105 transition-transform duration-200 z-30">
           <video
-            ref={localVideoRef}
+            ref={(el) => {
+              localVideoRef.current = el;
+              if (el && stream && el.srcObject !== stream) {
+                el.srcObject = stream;
+                el.play().catch(() => {});
+              }
+            }}
             autoPlay
             muted
             playsInline
