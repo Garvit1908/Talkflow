@@ -1,15 +1,27 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import SimplePeer from "simple-peer";
 
-// STUN servers covering port 19302 and port 3478 for diverse ISP/cellular NAT traversal
+// STUN and TURN relay servers for complete NAT/firewall traversal across cellular and ISP networks
 const ICE_SERVERS = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
-  { urls: "stun:stun3.l.google.com:19302" },
-  { urls: "stun:stun4.l.google.com:19302" },
   { urls: "stun:stun.cloudflare.com:3478" },
-  { urls: "stun:global.stun.twilio.com:3478" },
+  { urls: "stun:openrelay.metered.ca:80" },
+  {
+    urls: "turn:openrelay.metered.ca:80",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turn:openrelay.metered.ca:443",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turn:openrelay.metered.ca:443?transport=tcp",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
 ];
 
 // Creates an animated fallback stream if the hardware camera is locked by another window or unavailable
@@ -92,12 +104,72 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isVirtualFeed, setIsVirtualFeed] = useState(false);
+  const [remoteVideoActive, setRemoteVideoActive] = useState(false);
+  const [remoteAudioBlocked, setRemoteAudioBlocked] = useState(false);
 
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const peerRef = useRef(null);
   const streamRef = useRef(null);
   const hasStartedRef = useRef(false);
+
+  // Safe playback and track listener for remote video stream
+  useEffect(() => {
+    if (!remoteStream) {
+      setRemoteVideoActive(false);
+      return;
+    }
+
+    if (remoteVideoRef.current) {
+      if (remoteVideoRef.current.srcObject !== remoteStream) {
+        remoteVideoRef.current.srcObject = remoteStream;
+      }
+      const playPromise = remoteVideoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => {
+            setRemoteAudioBlocked(false);
+          })
+          .catch((err) => {
+            console.warn("Autoplay with sound restricted by browser policy:", err);
+            // If browser blocks unmuted playback, mute temporarily to ensure video stream renders
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.muted = true;
+              remoteVideoRef.current
+                .play()
+                .then(() => {
+                  setRemoteAudioBlocked(true);
+                })
+                .catch((e) => console.error("Remote video play failed even muted:", e));
+            }
+          });
+      }
+    }
+
+    // Check existing video tracks
+    const videoTracks = remoteStream.getVideoTracks();
+    if (videoTracks.length > 0 && videoTracks[0].enabled && !videoTracks[0].muted) {
+      setRemoteVideoActive(true);
+    }
+
+    const handleUnmute = () => setRemoteVideoActive(true);
+    const handleMute = () => setRemoteVideoActive(false);
+    const handleEnded = () => setRemoteVideoActive(false);
+
+    videoTracks.forEach((track) => {
+      track.addEventListener("unmute", handleUnmute);
+      track.addEventListener("mute", handleMute);
+      track.addEventListener("ended", handleEnded);
+    });
+
+    return () => {
+      videoTracks.forEach((track) => {
+        track.removeEventListener("unmute", handleUnmute);
+        track.removeEventListener("mute", handleMute);
+        track.removeEventListener("ended", handleEnded);
+      });
+    };
+  }, [remoteStream]);
 
   const cleanup = useCallback(() => {
     const activeStream = streamRef.current;
@@ -159,7 +231,9 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
     }
 
     const targetUserId =
-      typeof callData.to === "object" ? callData.to._id : callData.to;
+      typeof callData.to === "object"
+        ? callData.to._id || callData.to.id
+        : callData.to;
 
     if (callData.initiator) {
       setCallStatus("ringing");
@@ -177,8 +251,8 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
         socket.emit("call-user", {
           to: targetUserId,
           signal,
-          from: currentUser.id,
-          name: currentUser.name,
+          from: currentUser?.id || currentUser?._id,
+          name: currentUser?.name || "User",
         });
       });
 
@@ -277,7 +351,9 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
 
   const handleEndCall = () => {
     const targetUserId =
-      typeof callData.to === "object" ? callData.to._id : callData.to;
+      typeof callData.to === "object"
+        ? callData.to._id || callData.to.id
+        : callData.to;
     if (socket && targetUserId) {
       socket.emit("end-call", { to: targetUserId });
     }
@@ -301,33 +377,24 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
     }
   };
 
-  const hasRemoteVideo = Boolean(
-    remoteStream &&
-      remoteStream.getVideoTracks().length > 0 &&
-      remoteStream.getVideoTracks()[0].enabled
-  );
-
   return (
     <div className="fixed inset-0 bg-ink/85 z-50 flex items-center justify-center backdrop-blur-md animate-in fade-in duration-300 font-sans p-2 md:p-6">
       <div className="relative w-full h-full md:h-auto md:max-w-5xl md:aspect-video bg-evergreen md:rounded-3xl overflow-hidden shadow-2xl border border-white/10 flex flex-col">
         
         {/* Remote Video (Full Screen) */}
         <video
-          ref={(el) => {
-            remoteVideoRef.current = el;
-            if (el && remoteStream && el.srcObject !== remoteStream) {
-              el.srcObject = remoteStream;
-              el.play().catch(() => {});
-            }
-          }}
+          ref={remoteVideoRef}
           autoPlay
           playsInline
-          className={`w-full h-full object-cover transition-opacity duration-700 ${
-            callStatus === "connected" && hasRemoteVideo ? "opacity-100" : "opacity-0"
+          onLoadedMetadata={() => setRemoteVideoActive(true)}
+          onPlaying={() => setRemoteVideoActive(true)}
+          className={`w-full h-full object-cover transition-opacity duration-500 ${
+            callStatus === "connected" && remoteVideoActive ? "opacity-100" : "opacity-0"
           }`}
         />
 
-        {callStatus === "connected" && !hasRemoteVideo && (
+        {/* Remote Avatar Display when audio connected but video track is off/missing */}
+        {callStatus === "connected" && !remoteVideoActive && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-evergreen z-10">
             <div className="w-24 h-24 rounded-full bg-evergreen/85 text-lime border-2 border-lime/30 flex items-center justify-center font-bold text-3xl mb-4 shadow-xl">
               {callData.callerName?.charAt(0) || callData.to?.name?.charAt(0) || "U"}
@@ -340,6 +407,27 @@ export default function VideoCall({ socket, callData, currentUser, onEndCall }) 
               Audio Connected (Camera Off)
             </p>
           </div>
+        )}
+
+        {/* Audio blocked notification if browser forced muted autoplay */}
+        {remoteAudioBlocked && (
+          <button
+            onClick={() => {
+              if (remoteVideoRef.current) {
+                remoteVideoRef.current.muted = false;
+                remoteVideoRef.current
+                  .play()
+                  .then(() => setRemoteAudioBlocked(false))
+                  .catch(() => {});
+              }
+            }}
+            className="absolute top-16 left-1/2 -translate-x-1/2 z-30 px-4 py-1.5 bg-lime text-evergreen rounded-full text-xs font-bold font-display shadow-lg hover:bg-lime/90 flex items-center gap-1.5 cursor-pointer animate-bounce"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+            </svg>
+            Click to Unmute Audio
+          </button>
         )}
 
         {/* Top Bar Status */}
