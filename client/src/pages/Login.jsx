@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
-
 import { GoogleLogin } from "@react-oauth/google";
 import { apiClient } from "../config/api";
 
@@ -24,7 +23,7 @@ export default function Login() {
         password,
       });
       login(res.data.user, res.data.token);
-      navigate("/");
+      navigate("/chat");
     } catch (err) {
       if (err.code === "ECONNABORTED" || err.message?.includes("timeout")) {
         setError("Server is waking up (free tier). Please wait a moment and try again.");
@@ -60,38 +59,48 @@ export default function Login() {
     }
   };
 
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-[#0a0e1a] to-[#12172b] flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Background Orbs */}
-      <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] rounded-full bg-violet-600/10 blur-[120px] pointer-events-none"></div>
-      <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] rounded-full bg-cyan-600/10 blur-[120px] pointer-events-none"></div>
-      
+    <div className="min-h-screen bg-workspace flex items-center justify-center p-4 relative overflow-hidden font-sans selection:bg-lime selection:text-evergreen">
+      {/* Ambient background glows */}
+      <div className="absolute -top-24 -left-24 w-96 h-96 rounded-full bg-evergreen/3 blur-3xl pointer-events-none" />
+      <div className="absolute -bottom-24 -right-24 w-96 h-96 rounded-full bg-lime/20 blur-3xl pointer-events-none" />
+
       <div className="w-full max-w-md relative z-10">
         {/* Logo */}
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold bg-gradient-to-r from-violet-400 to-cyan-400 bg-clip-text text-transparent">
-            TalkFlow
-          </h1>
-          <p className="text-gray-400 mt-2">Connect. Chat. Call.</p>
+          <Link to="/" className="inline-flex items-center gap-2 group">
+            <div className="w-10 h-10 rounded-2xl bg-evergreen flex items-center justify-center text-lime font-bold text-xl shadow-md group-hover:scale-105 transition-transform">
+              T
+            </div>
+            <span className="text-3xl font-extrabold tracking-tight font-display text-ink">
+              TalkFlow<span className="text-lime">.</span>
+            </span>
+          </Link>
+          <p className="text-supporting text-sm mt-2 font-medium">Connect. Chat. Call.</p>
         </div>
 
         {/* Card */}
-        <div className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-8 shadow-2xl">
-          <h2 className="text-2xl font-semibold text-white mb-6">
+        <div className="bg-white border border-border-subtle rounded-3xl p-8 shadow-[0_8px_30px_rgba(23,33,31,0.06)]">
+          <h2 className="text-2xl font-bold text-ink font-display mb-2">
             Welcome back
           </h2>
+          <p className="text-supporting text-xs font-normal mb-6">
+            Enter your credentials to access your conversations.
+          </p>
 
           {error && (
-            <div className="bg-red-500/10 border border-red-500/30 text-red-400 px-4 py-3 rounded-xl mb-4 text-sm">
-              {error}
+            <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-2xl mb-5 text-xs font-medium flex items-center gap-2">
+              <svg className="w-4 h-4 shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+              </svg>
+              <span>{error}</span>
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-5">
+          <form onSubmit={handleSubmit} className="space-y-4">
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
-                Email
+              <label className="block text-xs font-semibold uppercase tracking-wider text-ink mb-1.5 font-display">
+                Email Address
               </label>
               <input
                 id="login-email"
@@ -99,13 +108,13 @@ export default function Login() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
-                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-500/50 transition-all"
+                className="w-full px-4 py-3 bg-workspace border border-border-subtle rounded-2xl text-ink placeholder-supporting/60 focus:outline-none focus:bg-white focus:border-evergreen focus:ring-2 focus:ring-evergreen/10 transition-all text-sm font-medium"
                 placeholder="you@example.com"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-300 mb-2">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-ink mb-1.5 font-display">
                 Password
               </label>
               <input
@@ -114,7 +123,7 @@ export default function Login() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-500/50 transition-all"
+                className="w-full px-4 py-3 bg-workspace border border-border-subtle rounded-2xl text-ink placeholder-supporting/60 focus:outline-none focus:bg-white focus:border-evergreen focus:ring-2 focus:ring-evergreen/10 transition-all text-sm font-medium"
                 placeholder="••••••••"
               />
             </div>
@@ -123,28 +132,16 @@ export default function Login() {
               id="login-submit"
               type="submit"
               disabled={loading}
-              className="w-full py-3 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white font-semibold rounded-xl hover:from-violet-500 hover:to-fuchsia-500 transition-all duration-300 shadow-[0_8px_25px_rgba(124,58,237,0.3)] hover:shadow-[0_12px_30px_rgba(124,58,237,0.5)] disabled:opacity-50 cursor-pointer"
+              className="w-full mt-2 py-3.5 bg-evergreen hover:bg-evergreen/90 text-lime font-bold text-sm rounded-2xl transition-all duration-200 shadow-md hover:shadow-lg disabled:opacity-50 cursor-pointer flex items-center justify-center gap-2"
             >
               {loading ? (
-                <span className="flex items-center justify-center gap-2">
-                  <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                      fill="none"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                    />
+                <>
+                  <svg className="animate-spin h-4 w-4 text-lime" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                   </svg>
-                  Signing in...
-                </span>
+                  <span>Signing in...</span>
+                </>
               ) : (
                 "Sign In"
               )}
@@ -153,9 +150,9 @@ export default function Login() {
 
           {/* Divider */}
           <div className="flex items-center gap-4 my-6">
-            <div className="flex-1 h-px bg-white/10"></div>
-            <span className="text-gray-500 text-xs font-medium uppercase tracking-wider">or</span>
-            <div className="flex-1 h-px bg-white/10"></div>
+            <div className="flex-1 h-px bg-border-subtle" />
+            <span className="text-supporting text-xs font-semibold uppercase tracking-wider">or</span>
+            <div className="flex-1 h-px bg-border-subtle" />
           </div>
 
           {/* Google Sign-In */}
@@ -163,21 +160,22 @@ export default function Login() {
             <GoogleLogin
               onSuccess={handleGoogleSuccess}
               onError={() => setError("Google sign-in failed. Please try again.")}
-              theme="filled_black"
+              theme="outline"
               shape="pill"
               size="large"
               text="continue_with"
               width="400"
+              locale="en"
             />
           </div>
 
-          <p className="text-gray-400 text-sm text-center mt-6">
+          <p className="text-supporting text-xs text-center mt-6">
             Don't have an account?{" "}
             <Link
               to="/signup"
-              className="text-fuchsia-400 hover:text-fuchsia-300 font-medium transition-colors"
+              className="text-evergreen hover:text-evergreen/80 font-bold transition-colors underline decoration-lime decoration-2 underline-offset-4"
             >
-              Sign up
+              Sign up for free
             </Link>
           </p>
         </div>

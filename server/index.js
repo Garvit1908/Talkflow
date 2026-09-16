@@ -5,6 +5,7 @@ const mongoose = require("mongoose");
 const { Server } = require("socket.io");
 const dns = require("dns");
 const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 const rateLimit = require("express-rate-limit");
 const helmet = require("helmet");
 require("dotenv").config();
@@ -23,11 +24,7 @@ const messageRoutes = require("./routes/messages");
 const Message = require("./models/Message");
 const Group = require("./models/Group");
 const User = require("./models/User");
-const { handleTalkBotMessage } = require("./services/talkbot");
-
-const openRouterKey = process.env.OPENROUTER_API_KEY;
-let talkBotId = null;
-const TALK_BOT_TIMEOUT_MS = 30_000;
+const { handleTalkBotMessage, getTalkBotId } = require("./services/talkbot");
 
 const app = express();
 app.set("trust proxy", 1);
@@ -79,7 +76,8 @@ app.use(helmet());
 
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== "production") {
+    // Allow requests with no origin (mobile apps, curl, etc.) and listed origins
+    if (!origin || allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
       callback(new Error("Not allowed by CORS"));
@@ -108,6 +106,8 @@ app.use("/api/messages", messageRoutes);
 
 // Track online users: userId -> socketId
 const onlineUsers = new Map();
+// Track active calls: socketId -> targetUserId
+const activeCalls = new Map();
 
 // Socket.io Middleware
 io.use(async (socket, next) => {
@@ -148,6 +148,11 @@ io.on("connection", (socket) => {
     const { receiverId, content } = data;
     const senderId = socket.userId;
 
+    // Validate message content
+    if (!content || typeof content !== "string" || content.trim().length === 0 || content.length > 5000) {
+      return;
+    }
+
     try {
       // Determine initial status based on if receiver is online
       const receiverSocketId = onlineUsers.get(receiverId);
@@ -180,7 +185,8 @@ io.on("connection", (socket) => {
       });
 
       // --- AI TalkBot Logic ---
-      if (receiverId === talkBotId?.toString()) {
+      const botId = await getTalkBotId();
+      if (botId && receiverId === botId.toString()) {
         handleTalkBotMessage(socket, io, onlineUsers, content);
       }
     } catch (error) {
@@ -226,6 +232,8 @@ io.on("connection", (socket) => {
 
   // Video call: caller signals the target user
   socket.on("call-user", (data) => {
+    if (!data?.to) return;
+    activeCalls.set(socket.id, data.to);
     const receiverSocketId = onlineUsers.get(data.to);
     if (receiverSocketId) {
       io.to(receiverSocketId).emit("incoming-call", {
@@ -238,6 +246,8 @@ io.on("connection", (socket) => {
 
   // Video call: callee accepts the call
   socket.on("accept-call", (data) => {
+    if (!data?.to) return;
+    activeCalls.set(socket.id, data.to);
     const callerSocketId = onlineUsers.get(data.to);
     if (callerSocketId) {
       io.to(callerSocketId).emit("call-accepted", {
@@ -253,6 +263,26 @@ io.on("connection", (socket) => {
       io.to(targetSocketId).emit("ice-candidate", {
         candidate: data.candidate,
       });
+    }
+  });
+
+  // Video call: end active call
+  socket.on("end-call", (data) => {
+    activeCalls.delete(socket.id);
+    if (!data?.to) return;
+    const targetSocketId = onlineUsers.get(data.to);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("call-ended");
+    }
+  });
+
+  // Video call: reject incoming call
+  socket.on("reject-call", (data) => {
+    activeCalls.delete(socket.id);
+    if (!data?.to) return;
+    const targetSocketId = onlineUsers.get(data.to);
+    if (targetSocketId) {
+      io.to(targetSocketId).emit("call-rejected");
     }
   });
 
@@ -277,6 +307,11 @@ io.on("connection", (socket) => {
     const senderId = socket.userId;
     const senderName = socket.userName;
 
+    // Validate message content
+    if (!content || typeof content !== "string" || content.trim().length === 0 || content.length > 5000) {
+      return;
+    }
+
     try {
       const group = await Group.findById(groupId);
       if (!group || !group.members.some((m) => m.toString() === senderId)) {
@@ -287,8 +322,18 @@ io.on("connection", (socket) => {
       const message = new Message({ senderId, groupId, content });
       await message.save();
 
-      // Broadcast to all group members in the room
-      io.to(`group-${groupId}`).emit("receive-group-message", {
+      // Broadcast to all group members in the room EXCEPT the sender
+      socket.to(`group-${groupId}`).emit("receive-group-message", {
+        _id: message._id,
+        senderId,
+        groupId,
+        content,
+        senderName,
+        createdAt: message.createdAt,
+      });
+
+      // Confirm to sender separately
+      socket.emit("group-message-sent", {
         _id: message._id,
         senderId,
         groupId,
@@ -303,8 +348,21 @@ io.on("connection", (socket) => {
 
   // User disconnects
   socket.on("disconnect", () => {
-    onlineUsers.delete(socket.userId);
-    io.emit("online-users", Array.from(onlineUsers.keys()));
+    // If user was in an active call, inform the peer immediately
+    const peerUserId = activeCalls.get(socket.id);
+    if (peerUserId) {
+      const peerSocketId = onlineUsers.get(peerUserId);
+      if (peerSocketId) {
+        io.to(peerSocketId).emit("call-ended");
+      }
+      activeCalls.delete(socket.id);
+    }
+
+    // Only mark user offline if this was their active socket
+    if (onlineUsers.get(socket.userId) === socket.id) {
+      onlineUsers.delete(socket.userId);
+      io.emit("online-users", Array.from(onlineUsers.keys()));
+    }
     console.log(`User ${socket.userId} disconnected`);
   });
 });
@@ -344,17 +402,18 @@ const startServer = async () => {
 
     console.log("Connected to MongoDB");
 
-    // Initialize TalkBot
+    // Initialize TalkBot with hashed password
     let botUser = await User.findOne({ email: "talkbot@system.local" });
     if (!botUser) {
+      const salt = await bcrypt.genSalt(10);
+      const hashedBotPwd = await bcrypt.hash(`bot_${Date.now()}_${Math.random()}`, salt);
       botUser = new User({
         name: "🤖 TalkBot (AI)",
         email: "talkbot@system.local",
-        password: "system_generated_bot_pwd_123!" 
+        password: hashedBotPwd,
       });
       await botUser.save();
     }
-    talkBotId = botUser._id;
     
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

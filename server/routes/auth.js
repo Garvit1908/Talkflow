@@ -38,7 +38,11 @@ router.post("/send-otp", async (req, res) => {
       message,
     });
 
-    res.status(200).json({ message: "OTP sent successfully" });
+    res.status(200).json({
+      message: process.env.BREVO_API_KEY
+        ? "OTP sent successfully"
+        : `OTP sent successfully. (Dev mode: OTP is ${otp})`,
+    });
   } catch (error) {
     console.error("OTP Error:", error);
     res.status(500).json({ message: "Email Error: " + error.message, error: error.message });

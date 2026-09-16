@@ -30,7 +30,7 @@ router.get("/group/:groupId", authMiddleware, async (req, res) => {
     if (!group) {
       return res.status(404).json({ message: "Group not found" });
     }
-    if (!group.members.some(id => id.toString() === req.userId)) {
+    if (!group.members.some(id => id && id.toString() === req.userId)) {
       return res.status(403).json({ message: "Access denied: Not a member of this group" });
     }
 
@@ -40,13 +40,13 @@ router.get("/group/:groupId", authMiddleware, async (req, res) => {
       .sort({ createdAt: 1 })
       .populate("senderId", "name");
 
-    // Map to include senderName
+    // Map to include senderName safely (handles deleted/null sender accounts)
     const formatted = messages.map((msg) => ({
       _id: msg._id,
-      senderId: msg.senderId._id || msg.senderId,
+      senderId: msg.senderId?._id || msg.senderId,
       groupId: msg.groupId,
       content: msg.content,
-      senderName: msg.senderId.name || "Unknown",
+      senderName: msg.senderId?.name || "Unknown",
       createdAt: msg.createdAt,
     }));
 
